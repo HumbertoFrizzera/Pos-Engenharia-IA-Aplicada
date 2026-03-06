@@ -1,7 +1,7 @@
 import 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js';
 import { workerEvents } from '../events/constants.js';
 let _globalCtx = {};
-let _model = null
+let _model = {};
 
 const WEIGHTS = {
     category: 0.4,
@@ -134,7 +134,9 @@ function encodeUser(user, context){
 function createTrainingData(context){
     const inputs = []
     const labels = []
-    context.users.forEach(user => {
+    context.users
+    .filter(u => u.purchases.length)
+    .forEach(user => {
         const userVector = encodeUser(user, context).dataSync()
         context.products.forEach(product => {
             const productVector = encodeProduct(product, context).dataSync()
@@ -155,6 +157,61 @@ function createTrainingData(context){
     }    
 }
 
+async function configureNeuralNetAndTrain(trainData){
+    const model = tf.sequential()
+
+    model.add(
+        tf.layers.dense({
+            inputShape: [trainData.inputDimention],
+            units: 128,
+            activation: 'relu'
+        })
+    )
+    
+    model.add(
+        tf.layers.dense({
+            units: 64,
+            activation: 'relu'
+        })
+    )
+    
+    model.add(
+        tf.layers.dense({
+            units: 32,
+            activation: 'relu'
+        })
+    )
+    
+    model.add(
+        tf.layers.dense({
+            units: 1,
+            activation: 'sigmoid'
+        })
+    )
+
+    model.compile({
+        optimizer: tf.train.adam(0.01),
+        loss: 'binaryCrossentropy',
+        metrics: ['accuracy']
+    })
+
+     await model.fit(trainData.xs, trainData.ys, {
+        epochs: 100,
+        batchSize: 32,
+        shuffle: true,
+        callbacks: {
+            onEpochEnd: (epoch, logs) => {
+                postMessage({
+                    type: workerEvents.trainingLog,
+                    epoch: epoch,
+                    loss: logs.loss,
+                    accuracy: logs.acc
+                });
+            }
+        }
+    })
+}
+
 async function trainModel({ users }) {
     console.log('Training model with users:', users);
     postMessage({ type: workerEvents.progressUpdate, progress: { progress: 1 } });
@@ -172,7 +229,7 @@ async function trainModel({ users }) {
     _globalCtx = context
 
     const trainData = createTrainingData(context)
-    debugger
+    _model = await configureNeuralNetAndTrain(trainData)
 
     postMessage({ type: workerEvents.progressUpdate, progress: { progress: 100 } });
     postMessage({ type: workerEvents.trainingComplete });
