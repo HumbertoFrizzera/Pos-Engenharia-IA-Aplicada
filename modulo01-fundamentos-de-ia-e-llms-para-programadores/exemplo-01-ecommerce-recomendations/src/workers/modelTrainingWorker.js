@@ -1,7 +1,7 @@
 import 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js';
 import { workerEvents } from '../events/constants.js';
 let _globalCtx = {};
-let _model = {};
+let _model = null;
 
 const WEIGHTS = {
     category: 0.4,
@@ -129,6 +129,18 @@ function encodeUser(user, context){
             context.dimentions
         ])
     }
+
+    return tf.concat1d(
+        [
+            tf.zeros([1]),
+            tf.tensor1d([
+                normalize(user.age, context.minAge, context.maxAge)
+                * WEIGHTS.age
+            ]),
+            tf.zeros([context.numCategories]),
+            tf.zeros([context.numColors],)
+        ]
+    ).reshape([1, context.dimentions])
 }
 
 function createTrainingData(context){
@@ -195,7 +207,7 @@ async function configureNeuralNetAndTrain(trainData){
         metrics: ['accuracy']
     })
 
-     await model.fit(trainData.xs, trainData.ys, {
+    await model.fit(trainData.xs, trainData.ys, {
         epochs: 100,
         batchSize: 32,
         shuffle: true,
@@ -210,6 +222,8 @@ async function configureNeuralNetAndTrain(trainData){
             }
         }
     })
+
+    return model
 }
 
 async function trainModel({ users }) {
@@ -234,9 +248,33 @@ async function trainModel({ users }) {
     postMessage({ type: workerEvents.progressUpdate, progress: { progress: 100 } });
     postMessage({ type: workerEvents.trainingComplete });
 }
-function recommend({ user }) {
 
+function recommend({ user }) {
+    if(!_model) return;
+
+    const context = _globalCtx
+
+    const userVector = encodeUser(user, context).dataSync()
+    const inputs = context.productVectors.map(({vector}) => {
+        return [ ...userVector, ...vector]
+    })
+    const inputTensor = tf.tensor2d(inputs)
+    const predictions = _model.predict(inputTensor)
+
+    const scores = predictions.dataSync()
+    const recommendations = context.productVectors.map((item, index) => {
+        return {
+            ...item.meta,
+            name: item.name,
+            score: scores[index]
+        }
+    })
+    const sortedItems = recommendations
+        .sort((a,b) => b.score - a.score)
+    
+    postMessage({ type: workerEvents.recommend, user, recommendations: sortedItems});
 }
+
 const handlers = {
     [workerEvents.trainModel]: trainModel,
     [workerEvents.recommend]: recommend,
